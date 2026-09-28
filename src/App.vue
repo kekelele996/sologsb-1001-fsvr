@@ -4,10 +4,10 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Clock, Delete, DocumentCopy, Download, EditPen, Files, Lock, MagicStick, Monitor,
-  RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
+  RefreshLeft, RefreshRight, Search, Switch, Unlock, UploadFilled, View,
 } from '@element-plus/icons-vue'
 import { useEditorStore } from './store/editor'
-import type { Cue, CueConflict } from './types'
+import type { Cue, CueConflict, RenamePreview } from './types'
 import { formatTime } from './utils/subtitle'
 
 const store = useEditorStore()
@@ -16,6 +16,55 @@ const fileInput = ref<HTMLInputElement>()
 const snapshotDialog = ref(false)
 const snapshotName = ref('')
 const search = ref('')
+const renameDialog = ref(false)
+const renameResultDialog = ref(false)
+const renameTermId = ref<string | null>(null)
+const renameTarget = ref('')
+
+const renameTerm = computed(() => project.value.terms.find((term) => term.id === renameTermId.value))
+const renamePreview = computed<RenamePreview | null>(() =>
+  renameTermId.value ? store.previewTermRename(renameTermId.value, renameTarget.value) : null,
+)
+const cueById = (id: string) => project.value.cues.find((cue) => cue.id === id)
+const lastRenameCues = computed(() =>
+  project.value.lastRename
+    ? project.value.lastRename.cueIds.map(cueById).filter((cue): cue is Cue => !!cue)
+    : [],
+)
+const lastRenameLockedCues = computed(() =>
+  project.value.lastRename
+    ? project.value.lastRename.lockedIds.map(cueById).filter((cue): cue is Cue => !!cue)
+    : [],
+)
+function openRename(term: { id: string; target: string }) {
+  renameTermId.value = term.id
+  renameTarget.value = term.target
+  renameResultDialog.value = false
+  renameDialog.value = true
+}
+function confirmRename() {
+  if (!renameTermId.value || !renamePreview.value) return
+  const preview = renamePreview.value
+  if (preview.conflict === 'empty') return ElMessage.error(store.t('renameEmpty'))
+  if (preview.conflict === 'same') return ElMessage.warning(store.t('renameUnchanged'))
+  if (preview.conflict === 'duplicate') return ElMessage.error(store.t('renameDuplicate', { target: preview.newTarget }))
+  const result = store.applyTermRename(renameTermId.value, renameTarget.value)
+  if (!result) return
+  renameDialog.value = false
+  renameResultDialog.value = true
+}
+function showRenameRecord() {
+  renameResultDialog.value = true
+}
+function dismissRenameRecord() {
+  store.dismissRenameRecord()
+  renameResultDialog.value = false
+}
+function focusCue(id: string) {
+  store.selectCue(id)
+  renameDialog.value = false
+  renameResultDialog.value = false
+}
 
 const filteredCues = computed(() => {
   const query = search.value.trim().toLowerCase()
@@ -184,8 +233,22 @@ const handleOffline = () => setOnline(false)
           <div v-for="term in project.terms" :key="term.id" class="term-card">
             <div><b>{{ term.source }}</b><span>→ {{ term.target }}</span></div>
             <small>{{ term.note }}</small>
+            <el-button size="small" text type="primary" :icon="Switch" @click="openRename(term)">{{ store.t('rename') }}</el-button>
           </div>
           <p class="section-note">{{ store.t('termHint') }}</p>
+          <div v-if="project.lastRename" class="rename-record">
+            <div class="rename-record-head">
+              <el-icon><View /></el-icon>
+              <strong>{{ store.t('renameDoneTitle') }}</strong>
+              <small>{{ new Date(project.lastRename.at).toLocaleString() }}</small>
+            </div>
+            <p>{{ store.t('renameDoneChanged', { source: project.lastRename.term.source, target: project.lastRename.term.target, count: project.lastRename.changed }) }}</p>
+            <p v-if="project.lastRename.locked" class="rename-record-locked">{{ store.t('renameDoneLocked', { count: project.lastRename.locked }) }}</p>
+            <div class="rename-record-actions">
+              <el-button size="small" type="primary" text @click="showRenameRecord">{{ store.t('renameLockedTitle') }} / {{ store.t('renameAffectedTitle') }}</el-button>
+              <el-button size="small" text @click="dismissRenameRecord">{{ store.t('close') }}</el-button>
+            </div>
+          </div>
         </section>
       </aside>
 
@@ -328,6 +391,76 @@ const handleOffline = () => setOnline(false)
         <p v-if="!project.snapshots.length" class="empty-state">{{ store.t('noSnapshots') }}</p>
       </div>
       <template #footer><el-button type="primary" @click="createSnapshot">{{ store.t('snapshot') }}</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="renameDialog" :title="store.t('renameTitle')" width="560px">
+      <div v-if="renameTerm && renamePreview" class="rename-panel">
+        <label>{{ store.t('renameCurrent') }}</label>
+        <div class="rename-current"><b>{{ renameTerm.source }}</b><span>→ {{ renameTerm.target }}</span></div>
+        <label>{{ store.t('renameNew') }}</label>
+        <el-input v-model="renameTarget" :placeholder="store.t('renameNew')" />
+        <el-alert
+          v-if="renamePreview.conflict === 'duplicate'" type="error" :closable="false" show-icon
+          :title="store.t('renameDuplicate', { target: renamePreview.newTarget })"
+        />
+        <el-alert v-else-if="renamePreview.conflict === 'empty'" type="warning" :closable="false" show-icon :title="store.t('renameEmpty')" />
+        <el-alert v-else-if="renamePreview.conflict === 'same'" type="info" :closable="false" show-icon :title="store.t('renameUnchanged')" />
+        <template v-else>
+          <p class="rename-summary change">{{ store.t('renameWillChange', { count: renamePreview.affected.length }) }}</p>
+          <p v-if="renamePreview.locked.length" class="rename-summary locked">
+            <el-icon><Lock /></el-icon>{{ store.t('renameLockedKeep', { count: renamePreview.locked.length }) }}
+          </p>
+          <p v-if="renamePreview.unaffected.length" class="rename-summary skip">{{ store.t('renameNoMatch', { count: renamePreview.unaffected.length }) }}</p>
+          <p v-if="!renamePreview.affected.length && !renamePreview.locked.length" class="rename-summary skip">{{ store.t('renameNoChange') }}</p>
+          <div v-if="renamePreview.affected.length" class="rename-cue-group">
+            <h4>{{ store.t('renameAffectedTitle') }}</h4>
+            <button v-for="cue in renamePreview.affected" :key="cue.id" class="rename-cue" @click="focusCue(cue.id)">
+              <code>{{ formatTime(cue.start) }}</code>
+              <span><template v-for="(part, i) in cue.target.split(renameTerm.target)" :key="i"><template v-if="i > 0"><b class="rename-old">{{ renameTerm.target }}</b><i class="rename-arrow">→</i><b class="rename-new">{{ renamePreview!.newTarget }}</b></template>{{ part }}</template></span>
+            </button>
+          </div>
+          <div v-if="renamePreview.locked.length" class="rename-cue-group locked">
+            <h4><el-icon><Lock /></el-icon>{{ store.t('renameLockedTitle') }}</h4>
+            <button v-for="cue in renamePreview.locked" :key="cue.id" class="rename-cue" @click="focusCue(cue.id)">
+              <code>{{ formatTime(cue.start) }}</code>
+              <span>{{ cue.target }}</span>
+            </button>
+          </div>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="renameDialog = false">{{ store.t('close') }}</el-button>
+        <el-button
+          type="primary" :disabled="!!renamePreview?.conflict"
+          @click="confirmRename"
+        >{{ store.t('renameConfirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="renameResultDialog" :title="store.t('renameDoneTitle')" width="560px">
+      <div v-if="project.lastRename" class="rename-panel">
+        <p class="rename-summary change">
+          {{ store.t('renameDoneChanged', { source: project.lastRename.term.source, target: project.lastRename.term.target, count: project.lastRename.changed }) }}
+          <small>{{ new Date(project.lastRename.at).toLocaleString() }}</small>
+        </p>
+        <p v-if="project.lastRename.skipped" class="rename-summary skip">{{ store.t('renameDoneSkipped', { count: project.lastRename.skipped }) }}</p>
+        <div v-if="project.lastRename.changed && lastRenameCues.length" class="rename-cue-group">
+          <h4>{{ store.t('renameAffectedTitle') }}</h4>
+          <button v-for="cue in lastRenameCues" :key="cue.id" class="rename-cue" @click="focusCue(cue.id)">
+            <code>{{ formatTime(cue.start) }}</code>
+            <span>{{ cue.target }}</span>
+          </button>
+        </div>
+        <div v-if="project.lastRename.locked && lastRenameLockedCues.length" class="rename-cue-group locked">
+          <h4><el-icon><Lock /></el-icon>{{ store.t('renameDoneLocked', { count: project.lastRename.locked }) }}</h4>
+          <button v-for="cue in lastRenameLockedCues" :key="cue.id" class="rename-cue" @click="focusCue(cue.id)">
+            <code>{{ formatTime(cue.start) }}</code>
+            <span>{{ cue.target }}</span>
+          </button>
+        </div>
+        <p v-if="!project.lastRename.changed && !project.lastRename.locked && !project.lastRename.skipped" class="rename-summary skip">{{ store.t('renameDoneNone') }}</p>
+      </div>
+      <template #footer><el-button type="primary" @click="renameResultDialog = false">{{ store.t('close') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

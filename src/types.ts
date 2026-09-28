@@ -43,6 +43,7 @@ export interface EditorDocument {
   actors: Actor[]
   terms: Term[]
   snapshots: Snapshot[]
+  lastRename?: RenameRecord | null
   updatedAt: number
   revision: number
   lastWriter: string
@@ -58,4 +59,30 @@ export interface HistoryEntry {
   label: string
   cues: Cue[]
   selectedCueId: string | null
+  terms?: Term[]
+  lastRename?: RenameRecord | null
+}
+
+export type RenameConflict = 'empty' | 'duplicate' | 'same'
+
+export interface RenamePreview {
+  term: Term
+  newTarget: string
+  affected: Cue[]
+  locked: Cue[]
+  unaffected: Cue[]
+  conflict: RenameConflict | null
+}
+
+export interface RenameResult {
+  changed: number
+  locked: number
+  skipped: number
+  term: Term
+  cueIds: string[]
+  lockedIds: string[]
+}
+
+export interface RenameRecord extends RenameResult {
+  at: number
 }

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
+import type { Cue, EditorDocument, Locale, RenamePreview, RenameRecord, RenameResult, Snapshot, Term } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
 import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
@@ -10,6 +10,7 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined
 let channel: BroadcastChannel | undefined
 
 const cloneCues = (cues: Cue[]): Cue[] => JSON.parse(JSON.stringify(cues)) as Cue[]
+const cloneTerms = (terms: Term[]): Term[] => JSON.parse(JSON.stringify(terms)) as Term[]
 const plainDocument = (document: EditorDocument): EditorDocument => JSON.parse(JSON.stringify(document)) as EditorDocument
 
 const createDefaultDocument = (): EditorDocument => ({
@@ -58,8 +59,8 @@ export const useEditorStore = defineStore('subtitle-editor', {
     tabId: makeId('tab'),
     lastSeenRevision: 0,
     mutationSerial: 0,
-    past: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
-    future: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
+    past: [] as { label: string; cues: Cue[]; selectedCueId: string | null; terms?: Term[]; lastRename?: RenameRecord | null }[],
+    future: [] as { label: string; cues: Cue[]; selectedCueId: string | null; terms?: Term[]; lastRename?: RenameRecord | null }[],
   }),
   getters: {
     t: (state) => (key: MessageKey, values?: Record<string, string | number>) => translate(state.document.language, key, values),
@@ -130,6 +131,16 @@ export const useEditorStore = defineStore('subtitle-editor', {
       if (nextSelection !== undefined) this.selectedCueId = nextSelection
       this.markChanged(label)
     },
+    commitTerms(label: string, mutate: () => void) {
+      const beforeCues = cloneCues(this.document.cues)
+      const beforeTerms = cloneTerms(this.document.terms)
+      const beforeRename = this.document.lastRename ?? null
+      this.past.push({ label, cues: beforeCues, selectedCueId: this.selectedCueId, terms: beforeTerms, lastRename: beforeRename })
+      if (this.past.length > 60) this.past.shift()
+      this.future = []
+      mutate()
+      this.markChanged(label)
+    },
     markChanged(label: string, persist = true) {
       this.document.updatedAt = Date.now()
       if (persist) {
@@ -198,16 +209,20 @@ export const useEditorStore = defineStore('subtitle-editor', {
     undo() {
       const entry = this.past.pop()
       if (!entry) return
-      this.future.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.future.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId, terms: entry.terms ? cloneTerms(this.document.terms) : undefined, lastRename: entry.lastRename !== undefined ? this.document.lastRename : undefined })
       this.document.cues = cloneCues(entry.cues)
+      if (entry.terms) this.document.terms = cloneTerms(entry.terms)
+      if (entry.lastRename !== undefined) this.document.lastRename = entry.lastRename
       this.selectedCueId = entry.selectedCueId
       this.markChanged(`undo:${entry.label}`)
     },
     redo() {
       const entry = this.future.pop()
       if (!entry) return
-      this.past.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.past.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId, terms: entry.terms ? cloneTerms(this.document.terms) : undefined, lastRename: entry.lastRename !== undefined ? this.document.lastRename : undefined })
       this.document.cues = cloneCues(entry.cues)
+      if (entry.terms) this.document.terms = cloneTerms(entry.terms)
+      if (entry.lastRename !== undefined) this.document.lastRename = entry.lastRename
       this.selectedCueId = entry.selectedCueId
       this.markChanged(`redo:${entry.label}`)
     },
@@ -297,6 +312,60 @@ export const useEditorStore = defineStore('subtitle-editor', {
       this.document.cues = cloneCues(snapshot.cues)
       this.selectedCueId = this.document.cues[0]?.id ?? null
       this.markChanged('restore-snapshot')
+    },
+    previewTermRename(termId: string, rawTarget: string): RenamePreview {
+      const term = this.document.terms.find((item) => item.id === termId)
+      const newTarget = rawTarget.trim()
+      const base: RenamePreview = {
+        term: term ?? { id: termId, source: '', target: '', note: '' },
+        newTarget,
+        affected: [],
+        locked: [],
+        unaffected: [],
+        conflict: null,
+      }
+      if (!term) return { ...base, conflict: 'empty' }
+      if (!newTarget) return { ...base, term, conflict: 'empty' }
+      if (newTarget === term.target) return { ...base, term, conflict: 'same' }
+      const duplicated = this.document.terms.some((item) => item.id !== term.id && item.target.trim() === newTarget)
+      const linked = this.document.cues.filter((cue) => cue.termIds.includes(term.id))
+      return {
+        term,
+        newTarget,
+        affected: linked.filter((cue) => !cue.locked && cue.target.includes(term.target)),
+        locked: linked.filter((cue) => cue.locked),
+        unaffected: linked.filter((cue) => !cue.locked && !cue.target.includes(term.target)),
+        conflict: duplicated ? 'duplicate' : null,
+      }
+    },
+    applyTermRename(termId: string, rawTarget: string): RenameResult | null {
+      const preview = this.previewTermRename(termId, rawTarget)
+      if (!preview.term || preview.conflict) return null
+      const { term, newTarget, affected, locked, unaffected } = preview
+      const oldTarget = term.target
+      const record: RenameRecord = {
+        at: Date.now(),
+        changed: affected.length,
+        locked: locked.length,
+        skipped: unaffected.length,
+        term: { ...term, target: newTarget },
+        cueIds: affected.map((cue) => cue.id),
+        lockedIds: locked.map((cue) => cue.id),
+      }
+      this.commitTerms(`rename-term:${term.source}`, () => {
+        term.target = newTarget
+        const ids = new Set(record.cueIds)
+        this.document.cues.forEach((cue) => {
+          if (ids.has(cue.id)) cue.target = cue.target.split(oldTarget).join(newTarget)
+        })
+        this.document.lastRename = record
+      })
+      return record
+    },
+    dismissRenameRecord() {
+      if (!this.document.lastRename) return
+      this.document.lastRename = null
+      this.markChanged('dismiss-rename-record')
     },
     importText(text: string, filename: string) {
       const lower = filename.toLowerCase()
