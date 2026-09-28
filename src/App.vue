@@ -4,10 +4,10 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Clock, Delete, DocumentCopy, Download, EditPen, Files, Lock, MagicStick, Monitor,
-  RefreshLeft, RefreshRight, Search, Unlock, UploadFilled,
+  RefreshLeft, RefreshRight, Search, Switch, Unlock, UploadFilled,
 } from '@element-plus/icons-vue'
 import { useEditorStore } from './store/editor'
-import type { Cue, CueConflict } from './types'
+import type { Cue, CueConflict, Term, TermRename, TermRenamePlan } from './types'
 import { formatTime } from './utils/subtitle'
 
 const store = useEditorStore()
@@ -16,6 +16,34 @@ const fileInput = ref<HTMLInputElement>()
 const snapshotDialog = ref(false)
 const snapshotName = ref('')
 const search = ref('')
+
+const renameDialogVisible = ref(false)
+const renameTermId = ref<string | null>(null)
+const renameNewTarget = ref('')
+const renameResult = ref<TermRename | null>(null)
+
+const renameTerm = computed<Term | undefined>(() =>
+  renameTermId.value ? project.value.terms.find((term) => term.id === renameTermId.value) : undefined,
+)
+const renamePlan = computed<TermRenamePlan | null>(() =>
+  renameTermId.value && !renameResult.value ? store.planTermRename(renameTermId.value, renameNewTarget.value) : null,
+)
+const HARD_ERRORS = new Set(['EMPTY_TARGET', 'EMPTY_OLD_TARGET', 'DUPLICATE_TARGET'])
+const renameHardError = computed(() => {
+  const error = renamePlan.value?.error
+  if (!error || !HARD_ERRORS.has(error)) return ''
+  if (error === 'DUPLICATE_TARGET') return store.t('renameErrDuplicate', { target: renameNewTarget.value.trim() })
+  return store.t(({
+    EMPTY_TARGET: 'renameErrEmpty',
+    EMPTY_OLD_TARGET: 'renameErrEmptyOld',
+  } as const)[error as 'EMPTY_TARGET' | 'EMPTY_OLD_TARGET'])
+})
+const renameSoftError = computed(() =>
+  renamePlan.value?.error === 'SAME_TARGET' ? store.t('renameErrSame') : '',
+)
+const renameHistory = computed<TermRename[]>(() =>
+  renameTermId.value ? project.value.termRenames.filter((item) => item.termId === renameTermId.value) : [],
+)
 
 const filteredCues = computed(() => {
   const query = search.value.trim().toLowerCase()
@@ -65,6 +93,46 @@ function cueWarnings(cue: Cue): CueConflict[] {
 }
 function termMismatches(cue: Cue) {
   return project.value.terms.filter((term) => cue.termIds.includes(term.id) && cue.target && !cue.target.includes(term.target))
+}
+function relatedCueCount(termId: string) {
+  return project.value.cues.filter((cue) => cue.termIds.includes(termId)).length
+}
+function cueNumber(id: string) {
+  return project.value.cues.findIndex((cue) => cue.id === id) + 1
+}
+function cueById(id: string) {
+  return project.value.cues.find((cue) => cue.id === id)
+}
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+function highlight(text: string, word: string, kind: 'new' | 'old') {
+  const safe = escapeRegExp(word)
+  return word
+    ? text.replace(new RegExp(safe, 'g'), `<mark class="rename-${kind}">$&</mark>`)
+    : text
+}
+function previewHighlight(cueId: string, oldTarget: string, newTarget: string) {
+  const target = cueById(cueId)?.target ?? ''
+  return highlight(target.split(oldTarget).join(newTarget), newTarget, 'new')
+}
+function openRename(term: Term) {
+  renameTermId.value = term.id
+  renameNewTarget.value = term.target
+  renameResult.value = null
+  renameDialogVisible.value = true
+}
+function closeRename() {
+  renameDialogVisible.value = false
+}
+function confirmRename() {
+  if (!renameTermId.value) return
+  const result = store.applyTermRename(renameTermId.value, renameNewTarget.value)
+  if (!result.ok || !result.record) return
+  renameResult.value = result.record
+}
+function formatRenameDate(value: number) {
+  return new Date(value).toLocaleString()
 }
 async function importFile(event: Event) {
   const input = event.target as HTMLInputElement
@@ -181,11 +249,14 @@ const handleOffline = () => setOnline(false)
         </section>
         <section>
           <div class="section-heading"><span><el-icon><EditPen /></el-icon>{{ store.t('terms') }}</span><small>{{ project.terms.length }}</small></div>
-          <div v-for="term in project.terms" :key="term.id" class="term-card">
+          <button v-for="term in project.terms" :key="term.id" type="button" class="term-card" @click="openRename(term)">
             <div><b>{{ term.source }}</b><span>→ {{ term.target }}</span></div>
             <small>{{ term.note }}</small>
-          </div>
-          <p class="section-note">{{ store.t('termHint') }}</p>
+            <span class="term-card-action">
+              <el-icon><Switch /></el-icon>{{ store.t('batchRename') }} · {{ relatedCueCount(term.id) }}
+            </span>
+          </button>
+          <p class="section-note">{{ store.t('renameOpenHint') }}</p>
         </section>
       </aside>
 
@@ -328,6 +399,98 @@ const handleOffline = () => setOnline(false)
         <p v-if="!project.snapshots.length" class="empty-state">{{ store.t('noSnapshots') }}</p>
       </div>
       <template #footer><el-button type="primary" @click="createSnapshot">{{ store.t('snapshot') }}</el-button></template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="renameDialogVisible" :title="store.t('batchRenameTitle')" width="560px"
+      :close-on-click-modal="false" @closed="renameResult = null"
+    >
+      <div v-if="renameTerm" class="rename-dialog">
+        <div class="rename-headline">
+          <b>{{ renameTerm.source }}</b>
+          <span v-html="highlight(renameResult ? renameResult.fromTarget : renameTerm.target, renameResult ? renameResult.fromTarget : renameTerm.target, 'old')" />
+          <el-icon><Switch /></el-icon>
+          <span v-if="renameResult" v-html="highlight(renameResult.toTarget, renameResult.toTarget, 'new')" />
+        </div>
+
+        <template v-if="!renameResult">
+          <label class="rename-label">{{ store.t('renameNew') }}</label>
+          <el-input v-model="renameNewTarget" :placeholder="store.t('renameNew')" />
+          <p v-if="renameHardError" class="rename-error">{{ renameHardError }}</p>
+          <p v-else-if="renameSoftError" class="preview-unchanged">{{ renameSoftError }}</p>
+
+          <div v-else-if="renamePlan" class="rename-preview">
+            <p class="preview-count">{{ store.t('renameRelated', { count: renamePlan.relatedCount }) }}</p>
+            <p :class="renamePlan.replaceCueIds.length ? 'preview-will' : 'preview-zero'">
+              {{ store.t(renamePlan.replaceCueIds.length ? 'renamePreview' : 'renamePreviewZero', { count: renamePlan.replaceCueIds.length }) }}
+            </p>
+            <ul v-if="renamePlan.replaceCueIds.length" class="rename-cue-list">
+              <li v-for="id in renamePlan.replaceCueIds" :key="id">
+                <code>#{{ cueNumber(id) }}</code>
+                <span v-html="previewHighlight(id, renamePlan.oldTarget, renamePlan.newTarget)" />
+              </li>
+            </ul>
+            <template v-if="renamePlan.lockedCueIds.length">
+              <p class="preview-locked">{{ store.t('renameLockedKeep', { count: renamePlan.lockedCueIds.length }) }}</p>
+              <ul class="rename-cue-list locked">
+                <li v-for="id in renamePlan.lockedCueIds" :key="id">
+                  <el-icon><Lock /></el-icon><code>#{{ cueNumber(id) }}</code>
+                  <span v-html="highlight(cueById(id)?.target ?? '', renamePlan.oldTarget, 'old')" />
+                </li>
+              </ul>
+            </template>
+            <p v-if="renamePlan.unchangedCueIds.length" class="preview-unchanged">
+              {{ store.t('renameUnchangedKeep', { count: renamePlan.unchangedCueIds.length }) }}
+            </p>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="rename-result">
+            <h3>{{ store.t('renameResultTitle') }}</h3>
+            <p class="preview-will">{{ store.t('renameResultDone', { count: renameResult.replacedCueIds.length, from: renameResult.fromTarget, to: renameResult.toTarget }) }}</p>
+            <ul v-if="renameResult.replacedCueIds.length" class="rename-cue-list">
+              <li v-for="id in renameResult.replacedCueIds" :key="id">
+                <code>#{{ cueNumber(id) }}</code>
+                <span v-html="highlight(cueById(id)?.target ?? '', renameResult.toTarget, 'new')" />
+              </li>
+            </ul>
+            <template v-if="renameResult.lockedCueIds.length">
+              <p class="preview-locked">{{ store.t('renameResultLocked', { count: renameResult.lockedCueIds.length, from: renameResult.fromTarget }) }}</p>
+              <ul class="rename-cue-list locked">
+                <li v-for="id in renameResult.lockedCueIds" :key="id">
+                  <el-icon><Lock /></el-icon><code>#{{ cueNumber(id) }}</code>
+                  <span v-html="highlight(cueById(id)?.target ?? '', renameResult.fromTarget, 'old')" />
+                </li>
+              </ul>
+            </template>
+            <p v-if="renameResult.unchangedCueIds.length" class="preview-unchanged">
+              {{ store.t('renameUnchangedKeep', { count: renameResult.unchangedCueIds.length }) }}
+            </p>
+          </div>
+        </template>
+
+        <div v-if="renameHistory.length" class="rename-history">
+          <h4>{{ store.t('renameHistory') }}</h4>
+          <div v-for="record in renameHistory" :key="record.id" class="rename-history-item">
+            <div>
+              <b>{{ record.source }}</b>
+              <span v-html="highlight(record.fromTarget, record.fromTarget, 'old')" />
+              <el-icon><Switch /></el-icon>
+              <span v-html="highlight(record.toTarget, record.toTarget, 'new')" />
+            </div>
+            <small>{{ store.t('renameHistoryMeta', { date: formatRenameDate(record.createdAt), replaced: record.replacedCueIds.length, locked: record.lockedCueIds.length }) }}</small>
+          </div>
+        </div>
+        <p class="rename-persist-hint">{{ store.t('renamePersistHint') }}</p>
+      </div>
+      <template #footer>
+        <template v-if="!renameResult">
+          <el-button @click="closeRename">{{ store.t('cancel') }}</el-button>
+          <el-button type="primary" :disabled="!renamePlan?.ok" @click="confirmRename">{{ store.t('renameConfirm') }}</el-button>
+        </template>
+        <el-button v-else type="primary" @click="closeRename">{{ store.t('done') }}</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>

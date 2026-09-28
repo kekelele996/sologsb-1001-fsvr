@@ -28,6 +28,39 @@ export interface Term {
   note: string
 }
 
+export type TermRenameErrorCode = 'TERM_NOT_FOUND' | 'EMPTY_TARGET' | 'EMPTY_OLD_TARGET' | 'SAME_TARGET' | 'DUPLICATE_TARGET'
+
+export interface TermRenamePlan {
+  ok: boolean
+  error?: TermRenameErrorCode
+  termId: string
+  oldTarget: string
+  newTarget: string
+  relatedCount: number
+  replaceCueIds: string[]
+  lockedCueIds: string[]
+  unchangedCueIds: string[]
+}
+
+export interface TermRenameResult {
+  ok: boolean
+  error?: TermRenameErrorCode
+  plan?: TermRenamePlan
+  record?: TermRename
+}
+
+export interface TermRename {
+  id: string
+  termId: string
+  source: string
+  fromTarget: string
+  toTarget: string
+  replacedCueIds: string[]
+  lockedCueIds: string[]
+  unchangedCueIds: string[]
+  createdAt: number
+}
+
 export interface Snapshot {
   id: string
   name: string
@@ -42,6 +75,7 @@ export interface EditorDocument {
   cues: Cue[]
   actors: Actor[]
   terms: Term[]
+  termRenames: TermRename[]
   snapshots: Snapshot[]
   updatedAt: number
   revision: number
@@ -57,5 +91,7 @@ export interface CueConflict {
 export interface HistoryEntry {
   label: string
   cues: Cue[]
+  terms: Term[]
+  termRenames: TermRename[]
   selectedCueId: string | null
 }

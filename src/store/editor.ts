@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Cue, EditorDocument, Locale, Snapshot } from '../types'
+import type { Cue, EditorDocument, Locale, Snapshot, Term, TermRename, TermRenamePlan, TermRenameResult } from '../types'
 import { loadDocument, saveDocument } from '../utils/db'
 import { makeId } from '../utils/id'
 import { parseScript, parseSrt, toSrt } from '../utils/subtitle'
@@ -10,7 +10,14 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined
 let channel: BroadcastChannel | undefined
 
 const cloneCues = (cues: Cue[]): Cue[] => JSON.parse(JSON.stringify(cues)) as Cue[]
+const cloneTerms = (terms: Term[]): Term[] => JSON.parse(JSON.stringify(terms)) as Term[]
+const cloneRenames = (renames: TermRename[]): TermRename[] => JSON.parse(JSON.stringify(renames)) as TermRename[]
 const plainDocument = (document: EditorDocument): EditorDocument => JSON.parse(JSON.stringify(document)) as EditorDocument
+
+const normalizeDocument = (document: EditorDocument): EditorDocument => ({
+  ...document,
+  termRenames: document.termRenames ?? [],
+})
 
 const createDefaultDocument = (): EditorDocument => ({
   id: DOCUMENT_ID,
@@ -31,6 +38,7 @@ const createDefaultDocument = (): EditorDocument => ({
     { id: 'term-03', source: 'pull request', target: '拉取请求', note: '首次出现保留英文缩写 PR' },
     { id: 'term-04', source: 'community', target: '社区', note: '泛指开发者社区' },
   ],
+  termRenames: [],
   cues: [
     { id: 'cue-demo-01', start: 0, end: 4.2, source: '开源并不是一项孤立的技术，而是一种持续协作的方式。', target: '开源并不是一项孤立的技术，而是一种持续协作的方式。', actorId: 'actor-narrator', speed: 1.02, termIds: ['term-01'], status: 'reviewed', locked: true },
     { id: 'cue-demo-02', start: 4.3, end: 8.6, source: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', target: '今天，我们邀请林博士谈谈社区维护者每天面对的选择。', actorId: 'actor-host', speed: 1, termIds: ['term-04', 'term-02'], status: 'reviewed', locked: false },
@@ -58,8 +66,8 @@ export const useEditorStore = defineStore('subtitle-editor', {
     tabId: makeId('tab'),
     lastSeenRevision: 0,
     mutationSerial: 0,
-    past: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
-    future: [] as { label: string; cues: Cue[]; selectedCueId: string | null }[],
+    past: [] as { label: string; cues: Cue[]; terms: Term[]; termRenames: TermRename[]; selectedCueId: string | null }[],
+    future: [] as { label: string; cues: Cue[]; terms: Term[]; termRenames: TermRename[]; selectedCueId: string | null }[],
   }),
   getters: {
     t: (state) => (key: MessageKey, values?: Record<string, string | number>) => translate(state.document.language, key, values),
@@ -81,7 +89,7 @@ export const useEditorStore = defineStore('subtitle-editor', {
       this.online = navigator.onLine
       const stored = await loadDocument(DOCUMENT_ID)
       if (stored) {
-        this.document = stored
+        this.document = normalizeDocument(stored)
         this.lastSeenRevision = stored.revision
       } else {
         const saved = await saveDocument(plainDocument(this.document))
@@ -102,7 +110,7 @@ export const useEditorStore = defineStore('subtitle-editor', {
           }
           const latest = await loadDocument(DOCUMENT_ID)
           if (latest && latest.revision > this.lastSeenRevision) {
-            this.document = latest
+            this.document = normalizeDocument(latest)
             this.lastSeenRevision = latest.revision
             this.saveState = 'saved'
           }
@@ -119,14 +127,31 @@ export const useEditorStore = defineStore('subtitle-editor', {
       this.document.language = locale
       this.markChanged('language', true)
     },
-    commit(label: string, mutate: (cues: Cue[]) => void, nextSelection?: string | null) {
+    commit(
+      label: string,
+      mutate: (cues: Cue[]) => void,
+      nextSelection?: string | null,
+      mutateGlossary?: (draft: { terms: Term[]; termRenames: TermRename[] }) => void,
+    ) {
       const before = cloneCues(this.document.cues)
       const working = cloneCues(this.document.cues)
       mutate(working)
-      this.past.push({ label, cues: before, selectedCueId: this.selectedCueId })
+      const termsBefore = cloneTerms(this.document.terms)
+      const renamesBefore = cloneRenames(this.document.termRenames)
+      const glossaryDraft = { terms: cloneTerms(this.document.terms), termRenames: cloneRenames(this.document.termRenames) }
+      mutateGlossary?.(glossaryDraft)
+      this.past.push({
+        label,
+        cues: before,
+        terms: termsBefore,
+        termRenames: renamesBefore,
+        selectedCueId: this.selectedCueId,
+      })
       if (this.past.length > 60) this.past.shift()
       this.future = []
       this.document.cues = working
+      this.document.terms = glossaryDraft.terms
+      this.document.termRenames = glossaryDraft.termRenames
       if (nextSelection !== undefined) this.selectedCueId = nextSelection
       this.markChanged(label)
     },
@@ -189,7 +214,7 @@ export const useEditorStore = defineStore('subtitle-editor', {
     async loadLatest() {
       const latest = await loadDocument(DOCUMENT_ID)
       if (!latest) return
-      this.document = latest
+      this.document = normalizeDocument(latest)
       this.lastSeenRevision = latest.revision
       this.conflict = false
       this.saveState = 'saved'
@@ -198,16 +223,32 @@ export const useEditorStore = defineStore('subtitle-editor', {
     undo() {
       const entry = this.past.pop()
       if (!entry) return
-      this.future.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.future.push({
+        label: entry.label,
+        cues: cloneCues(this.document.cues),
+        terms: cloneTerms(this.document.terms),
+        termRenames: cloneRenames(this.document.termRenames),
+        selectedCueId: this.selectedCueId,
+      })
       this.document.cues = cloneCues(entry.cues)
+      this.document.terms = cloneTerms(entry.terms)
+      this.document.termRenames = cloneRenames(entry.termRenames)
       this.selectedCueId = entry.selectedCueId
       this.markChanged(`undo:${entry.label}`)
     },
     redo() {
       const entry = this.future.pop()
       if (!entry) return
-      this.past.push({ label: entry.label, cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.past.push({
+        label: entry.label,
+        cues: cloneCues(this.document.cues),
+        terms: cloneTerms(this.document.terms),
+        termRenames: cloneRenames(this.document.termRenames),
+        selectedCueId: this.selectedCueId,
+      })
       this.document.cues = cloneCues(entry.cues)
+      this.document.terms = cloneTerms(entry.terms)
+      this.document.termRenames = cloneRenames(entry.termRenames)
       this.selectedCueId = entry.selectedCueId
       this.markChanged(`redo:${entry.label}`)
     },
@@ -284,6 +325,78 @@ export const useEditorStore = defineStore('subtitle-editor', {
         if (index >= 0) cues.splice(index, 1)
       }, this.document.cues[Math.max(0, this.document.cues.findIndex((item) => item.id === id) - 1)]?.id ?? null)
     },
+    planTermRename(termId: string, rawNewTarget: string): TermRenamePlan {
+      const term = this.document.terms.find((item) => item.id === termId)
+      const newTarget = rawNewTarget.trim()
+      const fail = (error: TermRenamePlan['error']): TermRenamePlan => ({
+        ok: false,
+        error,
+        termId,
+        oldTarget: term?.target ?? '',
+        newTarget,
+        relatedCount: 0,
+        replaceCueIds: [],
+        lockedCueIds: [],
+        unchangedCueIds: [],
+      })
+      if (!term) return fail('TERM_NOT_FOUND')
+      if (!newTarget) return fail('EMPTY_TARGET')
+      if (!term.target) return fail('EMPTY_OLD_TARGET')
+      if (newTarget === term.target) return fail('SAME_TARGET')
+      if (this.document.terms.some((item) => item.id !== termId && item.target.trim() === newTarget)) return fail('DUPLICATE_TARGET')
+
+      const related = this.document.cues.filter((cue) => cue.termIds.includes(termId))
+      const lockedCueIds = related.filter((cue) => cue.locked).map((cue) => cue.id)
+      const editable = related.filter((cue) => !cue.locked)
+      const replaceCueIds = editable.filter((cue) => cue.target.includes(term.target)).map((cue) => cue.id)
+      const unchangedCueIds = editable.filter((cue) => !cue.target.includes(term.target)).map((cue) => cue.id)
+      return {
+        ok: true,
+        termId,
+        oldTarget: term.target,
+        newTarget,
+        relatedCount: related.length,
+        replaceCueIds,
+        lockedCueIds,
+        unchangedCueIds,
+      }
+    },
+    applyTermRename(termId: string, rawNewTarget: string): TermRenameResult {
+      const plan = this.planTermRename(termId, rawNewTarget)
+      if (!plan.ok) return { ok: false, error: plan.error }
+      const term = this.document.terms.find((item) => item.id === termId)
+      if (!term) return { ok: false, error: 'TERM_NOT_FOUND' }
+      const { oldTarget, newTarget } = plan
+      this.commit(
+        `term-rename:${oldTarget}->${newTarget}`,
+        (cues) => {
+          for (const cue of cues) {
+            if (cue.locked || !cue.termIds.includes(termId) || !cue.target.includes(oldTarget)) continue
+            cue.target = cue.target.split(oldTarget).join(newTarget)
+          }
+        },
+        undefined,
+        ({ terms, termRenames }) => {
+          const target = terms.find((item) => item.id === termId)
+          if (target) target.target = newTarget
+          const record: TermRename = {
+            id: makeId('rename'),
+            termId,
+            source: target?.source ?? term.source,
+            fromTarget: oldTarget,
+            toTarget: newTarget,
+            replacedCueIds: [...plan.replaceCueIds],
+            lockedCueIds: [...plan.lockedCueIds],
+            unchangedCueIds: [...plan.unchangedCueIds],
+            createdAt: Date.now(),
+          }
+          termRenames.unshift(record)
+          if (termRenames.length > 50) termRenames.length = 50
+        },
+      )
+      const record = this.document.termRenames.find((item) => item.termId === termId && item.toTarget === newTarget)
+      return { ok: true, plan, record }
+    },
     createSnapshot(name: string) {
       const snapshot: Snapshot = { id: makeId('snapshot'), name: name.trim() || `v${this.document.snapshots.length + 1}`, createdAt: Date.now(), cues: cloneCues(this.document.cues) }
       this.document.snapshots.unshift(snapshot)
@@ -292,7 +405,13 @@ export const useEditorStore = defineStore('subtitle-editor', {
     restoreSnapshot(id: string) {
       const snapshot = this.document.snapshots.find((item) => item.id === id)
       if (!snapshot) return
-      this.past.push({ label: 'restore-snapshot', cues: cloneCues(this.document.cues), selectedCueId: this.selectedCueId })
+      this.past.push({
+        label: 'restore-snapshot',
+        cues: cloneCues(this.document.cues),
+        terms: cloneTerms(this.document.terms),
+        termRenames: cloneRenames(this.document.termRenames),
+        selectedCueId: this.selectedCueId,
+      })
       this.future = []
       this.document.cues = cloneCues(snapshot.cues)
       this.selectedCueId = this.document.cues[0]?.id ?? null

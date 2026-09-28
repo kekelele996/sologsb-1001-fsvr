@@ -46,11 +46,14 @@ button, input, textarea { font: inherit; }
 .actor-filter b, .section-heading small { color: #8793a7; font-size: 11px; }
 .actor-dot { width: 8px; height: 8px; border-radius: 50%; }
 .actor-dot.all { background: #8c98aa; box-shadow: 0 0 0 4px #e9edf3; }
-.term-card { padding: 9px 0; border-bottom: 1px solid #edf1f6; }
+.term-card { display: block; width: 100%; padding: 8px 10px; margin: 3px 0; border: 1px solid transparent; border-bottom: 1px solid #edf1f6; border-radius: 9px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.term-card:hover { border-color: #c4d4f0; background: #f4f7fe; }
 .term-card div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .term-card b { color: #233452; }
 .term-card span { color: #2f6fed; }
 .term-card small, .section-note { color: #7c8799; font-size: 11px; }
+.term-card-action { display: inline-flex !important; align-items: center; gap: 4px; margin-top: 5px; color: #2f6fed !important; font-size: 11px; }
+.term-card-action .el-icon { font-size: 12px; }
 .section-note { line-height: 1.55; }
 .project-strip { display: flex; justify-content: space-between; align-items: start; gap: 20px; margin-bottom: 12px; }
 .title-input { max-width: 520px; }
@@ -133,3 +136,29 @@ kbd { padding: 2px 5px; border: 1px solid #5a6981; border-radius: 4px; color: wh
   .cue-row { grid-template-columns: 34px minmax(0, 1fr); }
   .cue-quick-actions { grid-column: 2; }
 }
+.rename-dialog { display: flex; flex-direction: column; gap: 8px; }
+.rename-headline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-radius: 9px; background: #f4f7fe; font-size: 13px; }
+.rename-headline b { color: #233452; }
+.rename-headline .el-icon { color: #8793a7; }
+.rename-label { margin: 4px 0 2px; color: #647187; font-size: 11px; font-weight: 700; }
+.rename-error { margin: 6px 0; padding: 9px 11px; border-radius: 8px; color: #9b2c2c; background: #fdecec; border: 1px solid #f3c0c0; font-size: 12px; line-height: 1.5; }
+.rename-preview, .rename-result { display: flex; flex-direction: column; gap: 6px; }
+.preview-count { margin: 2px 0 0; color: #8793a7; font-size: 11px; }
+.preview-will { margin: 0; color: #1d5bbf; font-size: 13px; font-weight: 700; }
+.preview-zero { margin: 0; color: #8a6d1d; font-size: 12px; }
+.preview-locked { margin: 8px 0 0; color: #8a6d1d; font-size: 12px; font-weight: 700; }
+.preview-unchanged { margin: 6px 0 0; color: #8793a7; font-size: 11px; }
+.rename-cue-list { max-height: 168px; overflow: auto; margin: 2px 0; padding: 4px 0; border-top: 1px solid #edf1f6; list-style: none; }
+.rename-cue-list li { display: flex; align-items: baseline; gap: 8px; padding: 5px 2px; border-bottom: 1px solid #f2f5f9; font-size: 12px; color: #46546b; line-height: 1.5; }
+.rename-cue-list code { flex: none; color: #8a97ab; font-size: 10px; }
+.rename-cue-list .el-icon { flex: none; color: #c08a2e; font-size: 12px; }
+.rename-cue-list.locked li { background: #fffdf5; }
+.rename-cue-list mark { padding: 0 3px; border-radius: 4px; }
+.rename-new { background: #d9ead9; color: #1f6b3a; }
+.rename-old { background: #fde7c8; color: #8a5a10; }
+.rename-history { margin-top: 8px; padding-top: 10px; border-top: 1px solid #e3e9f1; }
+.rename-history h4 { margin: 0 0 6px; color: #33425a; font-size: 12px; }
+.rename-history-item { display: flex; flex-direction: column; gap: 3px; padding: 7px 0; border-bottom: 1px dashed #e6ebf2; font-size: 12px; }
+.rename-history-item div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rename-history-item small { color: #8793a7; font-size: 10px; }
+.rename-persist-hint { margin: 6px 0 0; color: #98a3b4; font-size: 10px; line-height: 1.5; }
